@@ -5,8 +5,15 @@
 // apart at 120 BPM, 0xFC at the stop); Off; Clock only; no playhead; a start in the middle of a song (0xF2, 0xFB) and
 // with Start on the bar line (0xFA on the bar line); a core switched while playing (a fresh start, no 0xFC); a clock in
 // the host's MIDI wins; a block the processor skipped (no channels: the early return) under half a tick and over; the
-// settings in the state (a new instance: Clock + transport; a state saved before the setting: Off). FM1EMU_HOME points at
+// settings in the state (a new instance: Clock + transport; a state saved before the setting: Off); and the clock against
+// a host MIDI event on the very same sample (the core reads the same device millisecond for both). FM1EMU_HOME points at
 // a scratch folder under the build.
+//
+// THE CORE'S MILLISECONDS are the engine's, not the clock's: the Device runs the core by the host's demand (an unpaced
+// native core, as here: device.h PACING), a 128-frame block at 44.1 kHz (2.9 ms) at a time, so the millisecond a message
+// meets runs ahead of the host's sample by 0 .. 2.9 ms and is a whole number. Two messages on a perfect grid are read up to a
+// block plus a millisecond off it (3.9 ms), whatever sent them. That bound is the tolerance of the spacing check, which is
+// only a sanity check; the check of the clock's own sample accuracy is the one against a host event on the same sample.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -97,7 +104,7 @@ struct Run {
         for (const auto e : m) {
             const uint8_t *d = e.data;
             if (e.numBytes == 12 && d[0] == 0xF0 && d[1] == 0x7D && d[2] == 0x43 && d[3] == 0x4B)
-                recs.push_back({0xF0 + d[4], d[5], d[6], (double)((uint32_t)d[7] | (uint32_t)d[8] << 7 | (uint32_t)d[9] << 14 | (uint32_t)d[10] << 21)});
+                recs.push_back({d[4] == 0x10 ? 0xB0 : 0xF0 + d[4], d[5], d[6], (double)((uint32_t)d[7] | (uint32_t)d[8] << 7 | (uint32_t)d[9] << 14 | (uint32_t)d[10] << 21)});
         }
         if (head.playing)
             head.ppq += bs * head.bpm / (60.0 * sr);
@@ -177,8 +184,49 @@ int main()
                 n++;
             }
         const double mean = n > 1 ? (last - first) / (n - 1) : 0;
-        check(worst <= 1.5, "every tick " + std::to_string(tickMs) + " ms after the one before, +/- 1.5 (device ms are whole): worst " + std::to_string(worst));
+        const double blockMs = 1000.0 * EMU_BLOCK / EMU_FS;   // (the Device's internal block: see the top)
+        check(worst <= blockMs + 1.0, "every tick " + std::to_string(tickMs) + " ms after the one before, within a device block and a ms (" +
+                                          std::to_string(blockMs + 1.0) + "): worst " + std::to_string(worst));
         check(std::fabs(mean - tickMs) <= 0.2, "the mean spacing " + std::to_string(mean) + " ms (no drift)");
+    }
+
+    std::printf("[the clock against a host event on the same sample]\n");
+    {
+        auto p = makeProcessor();
+        p->setHostClockMode(1);
+        Run r(*p);
+        r.head.playing = true;
+        // a tick, in samples: exactly 1000 at 120 BPM and 48 kHz, so the clock's tick and the host's event sit on the very same
+        // sample (one sample apart they can be read a whole device block apart: the Device steps its clock between them)
+        const double grid = r.sr * 60.0 / r.head.bpm / 24.0;
+        const int ticks = 144;
+        int next = 0;
+        for (int64_t at = 0; next < ticks; at += r.bs) {
+            juce::MidiBuffer m;
+            for (; next < ticks; next++) {
+                const int64_t pos = (int64_t)std::floor(next * grid + 0.5);
+                if (pos >= at + r.bs)
+                    break;
+                m.addEvent(juce::MidiMessage::controllerEvent(1, 1, next & 0x7F), (int)(pos - at));
+            }
+            r.block(&m);
+        }
+        r.head.playing = false;
+        r.blocks(8);
+        std::vector<double> t8, tc;
+        for (const Rec &x : r.recs) {
+            if (x.st == 0xF8)
+                t8.push_back(x.ms);
+            else if (x.st == 0xB0 && x.d1 == 1)
+                tc.push_back(x.ms);
+        }
+        double worst = 0;
+        for (size_t i = 0; i < std::min(t8.size(), tc.size()); i++)
+            worst = std::max(worst, std::fabs(t8[i] - tc[i]));
+        check(t8.size() == (size_t)ticks && tc.size() == (size_t)ticks,
+              "a tick and a control change per 1/24 quarter: " + std::to_string(t8.size()) + " and " + std::to_string(tc.size()));
+        check(worst <= 1.0, "each tick is read at the same device ms as the host's control change on its sample, within 1 ms (the "
+                            "engine's granularity is in both): worst " + std::to_string(worst));
     }
 
     std::printf("[the modes, no playhead]\n");

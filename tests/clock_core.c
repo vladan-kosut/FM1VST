@@ -3,8 +3,11 @@
  * the MIDI clock messages it is given and gives each back as a SysEx on its MIDI out, so the test sees, in the host's
  * MIDI, what reached the core and when (in the core's own device milliseconds):
  *   - 0xF8 .. 0xFC (USB-MIDI CIN 0xF) and 0xF2 (CIN 3) through midi_in are kept, with the device millisecond they
- *     arrived in (tick() counts them up from 0 at each init);
- *   - at the next tick() each becomes F0 7D 43 4B <status - 0xF0> <data1> <data2> <ms in 4 x 7 bits, low first> F7.
+ *     arrived in (tick() counts them up from 0 at each init); so is a control change (CIN 0xB, on any channel), the
+ *     host's own MIDI event the test sets beside the clock to see what the engine's timing does to any message;
+ *   - at the next tick() each becomes F0 7D 43 4B <type> <data1> <data2> <ms in 4 x 7 bits, low first> F7, the type
+ *     being status - 0xF0 (2 for 0xF2, 8 .. 12 for 0xF8 .. 0xFC) or 0x10 for a control change (data1 its number, data2
+ *     its value; 0x10 is out of the range of the others).
  * Everything else (notes, SysEx) is dropped. Silence, a blank screen, a 64 KiB flash. */
 #include <stdint.h>
 #include <string.h>
@@ -63,6 +66,8 @@ static int midi_in(uint32_t p)
         keep(b0, 0, 0);
     else if (cin == 3 && b0 == 0xF2)
         keep(b0, b1, b2);
+    else if (cin == 0xB && (b0 & 0xF0) == 0xB0)
+        keep(0xB0, b1, b2);
     return 1;
 }
 
@@ -82,7 +87,8 @@ static void tick(uint32_t ms)
         uint8_t r[16];
         uint32_t k = 0;
         r[k++] = 0xF0, r[k++] = 0x7D, r[k++] = 0x43, r[k++] = 0x4B;
-        r[k++] = (uint8_t)(rec[i].st - 0xF0u), r[k++] = rec[i].d1 & 0x7F, r[k++] = rec[i].d2 & 0x7F;
+        r[k++] = rec[i].st == 0xB0 ? 0x10 : (uint8_t)(rec[i].st - 0xF0u);
+        r[k++] = rec[i].d1 & 0x7F, r[k++] = rec[i].d2 & 0x7F;
         r[k++] = (uint8_t)(rec[i].ms & 0x7F), r[k++] = (uint8_t)((rec[i].ms >> 7) & 0x7F);
         r[k++] = (uint8_t)((rec[i].ms >> 14) & 0x7F), r[k++] = (uint8_t)((rec[i].ms >> 21) & 0x7F);
         r[k++] = 0xF7;
