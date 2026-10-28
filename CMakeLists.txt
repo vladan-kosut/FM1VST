@@ -408,6 +408,12 @@ add_dependencies(halt_test ${FM1_CORE_TARGETS})
 add_test(NAME halt_test COMMAND halt_test)
 set_tests_properties(halt_test PROPERTIES SKIP_RETURN_CODE 77)
 
+# the host's transport as MIDI clock (plugin/HostClock.h): pure code, a simulated playhead, no JUCE and no core
+add_executable(host_clock_test tests/host_clock_test.cpp plugin/HostClock.cpp)
+target_include_directories(host_clock_test PRIVATE plugin)
+target_compile_features(host_clock_test PRIVATE cxx_std_17)
+add_test(NAME host_clock_test COMMAND host_clock_test)
+
 add_executable(param_test tests/param_test.cpp)
 target_link_libraries(param_test PRIVATE fm1testlib)
 target_compile_definitions(param_test PRIVATE FM1_SCRATCH_DIR="${CMAKE_BINARY_DIR}/param_test_home")
