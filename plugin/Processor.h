@@ -134,6 +134,7 @@
 #include "AudioTap.h"
 #include "EditorPort.h"
 #include "EmuClock.h"
+#include "HostClock.h"
 #include "HostRefresh.h"
 #include "Hub.h"
 
@@ -411,6 +412,13 @@ public:
     bool getRemoteEnabled() const { return remoteOn_.load(); }
     void setRemoteIgnoreMidi(bool on) { remoteIgnoreMidi_.store(on); }
     bool getRemoteIgnoreMidi() const { return remoteIgnoreMidi_.load(); }
+    // ---- Host clock (HostClock.h; stored in the state): the host's tempo, position and transport as MIDI clock for the
+    // core, 0 Off, 1 Clock, 2 Clock + transport (a new instance's default; a saved state without it: Off). onBar: a start in the middle of a song waits for the next bar
+    // line and sends 0xFA, for firmwares that don't read the song position (0xF2).
+    void setHostClockMode(int m) { hostClockMode_.store(juce::jlimit(0, 2, m)); }
+    int getHostClockMode() const { return hostClockMode_.load(); }
+    void setHostClockOnBar(bool on) { hostClockOnBar_.store(on); }
+    bool getHostClockOnBar() const { return hostClockOnBar_.load(); }
     RemoteLink::Status remoteStatus() const { return remote_->status(); }
     // the unit's own panel events as they reach a DAW from its MIDI port (RemoteFM1 docs/PROTOCOL.md section 4): note
     // on / off 53..79 on channel 16 (keys), 0..13 on channel 15 (buttons), CC 7 / 39 / 16..22 on channel 15 (MASTER,
@@ -700,6 +708,11 @@ private:
     // Remote FM-1 (see the top): the link (created with the processor; its thread starts with the first enable)
     std::unique_ptr<RemoteLink> remote_;
     std::atomic<bool> remoteOn_{false}, remoteIgnoreMidi_{true};
+    // the host clock: the audio thread's, with devLock_ held (a boot only raises the flag; renderBlock resyncs)
+    hostclock::HostClock hostClock_;
+    std::array<hostclock::Event, hostclock::kMaxEvents> clockEv_{};
+    std::atomic<int> hostClockMode_{(int)hostclock::Mode::ClockTransport};
+    std::atomic<bool> hostClockOnBar_{false}, hostClockResync_{false};
     // the audio thread's side: what the unit holds (keys; buttons as label bits), its MASTER until the parameter
     // follows, what was last published
     uint32_t remoteKeys_ = 0, remoteButtons_ = 0;

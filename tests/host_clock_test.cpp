@@ -92,6 +92,12 @@ struct Sim {
             ppq = p1;
         return c;
     }
+    void skip(int n)                                  // a block the core never got: the playhead moved on without it
+    {
+        samples += n;
+        if (playing)
+            ppq += n * bpm / (60.0 * sr);
+    }
     void run(double ppqLen, double tempo = 0.0)       // blocks until the playhead has moved ppqLen
     {
         const double end = ppq + ppqLen;
@@ -395,6 +401,30 @@ int main()
             check(count(b.log, 0xFB, a3) == 0 && count(b.log, 0xFA, a3) == 1,
                   "startOnBar, stopped, played again " + std::to_string(j) + " off: 0xFA on the bar line, no 0xFB");
         }
+    }
+
+    // 6c. a block the processor skipped (the lock was taken, no core booted): under half a tick it is a tick late and
+    // nothing else; more, the core lost its ticks and the move is a locate
+    {
+        Sim a;
+        a.bs = 256, a.playing = true;
+        a.run(8.0);
+        const size_t at = a.log.size();
+        a.skip(256);
+        a.hc_expectsTicks = false;
+        a.run(2.0);
+        check(count(a.log, 0xFC, at) + count(a.log, 0xF2, at) + count(a.log, 0xFB, at) + count(a.log, 0xFA, at) == 0 &&
+                  count(a.log, 0xF8) == (int)std::ceil(a.ppq * 24.0 - 1e-6) && !a.badBlock,
+              "a skipped block of 256 (a quarter of a tick): no transport messages, no tick lost");
+        Sim b;
+        b.bs = 2048, b.playing = true;
+        b.run(8.0);
+        const size_t bt = b.log.size();
+        b.skip(2048);
+        b.hc_expectsTicks = false;
+        b.run(2.0);
+        check(count(b.log, 0xFC, bt) == 1 && count(b.log, 0xF2, bt) == 1 && count(b.log, 0xFB, bt) == 1 && !b.badBlock,
+              "a skipped block of 2048 (two ticks): a locate (0xFC, 0xF2, 0xFB)");
     }
 
     // 7. a count-in: nothing until PPQ 0, then 0xFA and the tick there

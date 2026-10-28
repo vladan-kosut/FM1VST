@@ -24,7 +24,7 @@ The editor is the FM-1 panel itself (phase 3): LEDs, LCD, mouse and keyboard as 
 | `core-glue/felucca/`, `core-glue/melodee/` | the Felucca and Melodee cores, the same three files (`core_<id>.c`, `core_<id>_params.c`, `core_<id>_desc.c`) plus, because these firmwares have no emulator of their own, its equivalent written here: `<id>_fw.c` (the `emu_fw_*` hooks, as ChoralRoot's `emu_fw.c`), `<id>_firmware.h` (the include list, as `emu_firmware.h`) and `<id>_hal.h` (the HAL on the host, as `emu_hal_fw.h`) |
 | `cores/` | the firmwares, git submodules, read-only, pinned (below) |
 | `remote/RemoteFM1` | [RemoteFM1](https://github.com/Quixotic7/RemoteFM1) (submodule, pinned at `v0.2.2` (`59a5b52`), read-only): the protocol and libremotefm1, the host library behind Remote FM-1 (below) |
-| `plugin/` | the JUCE plugin: `Processor.{h,cpp}` (`FM1Processor`: the core and its `Device` on the audio thread, parameters and the Tier 2 feedback loop, MIDI, state, presets, the firmware switch; the threading and file layout are in its header comment), `Tier2Parameter.{h,cpp}` (a rebindable host parameter slot, and `KnobParameter`: a physical knob that follows the firmware's screen), `Editor.{h,cpp}` (the device and screen views, the corner button), `Sheet.{h,cpp}` (the settings sheet: firmware browser, presets, Remote FM-1, playing, host control, themes, view, device, about), `Widgets.{h,cpp}` and `Look.{h,cpp}` (the sheet's controls; the palette, the type and the LookAndFeel), `StandaloneHooks.{h,cpp}` (the Standalone app's audio / MIDI settings in the sheet), `fonts/` (Inter Tight, OFL 1.1, and its build step), `PanelComponent.{h,cpp}` (the FM-1 panel: the emulator's drawing, layout, mouse and key map), `Theme.{h,cpp}` (colour themes: the derived palette, the presets, custom theme files) and `RemoteLink.{h,cpp}` (Remote FM-1: the session thread, the unit lock, the event queue and the screen snapshot) |
+| `plugin/` | the JUCE plugin: `Processor.{h,cpp}` (`FM1Processor`: the core and its `Device` on the audio thread, parameters and the Tier 2 feedback loop, MIDI, state, presets, the firmware switch; the threading and file layout are in its header comment), `Tier2Parameter.{h,cpp}` (a rebindable host parameter slot, and `KnobParameter`: a physical knob that follows the firmware's screen), `Editor.{h,cpp}` (the device and screen views, the corner button), `Sheet.{h,cpp}` (the settings sheet: firmware browser, presets, Remote FM-1, playing, host control, themes, view, device, about), `Widgets.{h,cpp}` and `Look.{h,cpp}` (the sheet's controls; the palette, the type and the LookAndFeel), `StandaloneHooks.{h,cpp}` (the Standalone app's audio / MIDI settings in the sheet), `fonts/` (Inter Tight, OFL 1.1, and its build step), `HostClock.{h,cpp}` (the host's transport as MIDI clock for the firmware; pure code) and `HostClockPlayHead.h` (the host's `AudioPlayHead` as its input), `PanelComponent.{h,cpp}` (the FM-1 panel: the emulator's drawing, layout, mouse and key map), `Theme.{h,cpp}` (colour themes: the derived palette, the presets, custom theme files) and `RemoteLink.{h,cpp}` (Remote FM-1: the session thread, the unit lock, the event queue and the screen snapshot) |
 | `engine/` | C++17, no JUCE: `cores.{h,cpp}` (find and load modules, one private copy per instance), `device.{h,cpp}` (the single-thread device clock, input, LEDs, LCD, `render` at any host rate), `resampler.h` (4-point Lagrange) |
 | `tests/` | `core_smoke`, `param_test` and `core_conformance` (per core), `common/` (the glue helpers), `replay_test`, `double_load_test`, `halt_test`, `plugin_test`, `tier2_test`, `panel_render_test`, `remote_test`, and `script_runner` (the emulator's script grammar on a `Device`) |
 
@@ -260,7 +260,19 @@ bass on channel 2 once a bass sound is chosen), so it can drive other instrument
   "... and go to the firmware's MIDI in" sends it as well.
 - **MIDI out:** the firmware's USB-MIDI packets, decoded (SysEx reassembled), at the position in the block where they
   were produced.
-- **State:** the firmware's id and version, the settings (transpose, the MIDI toggles, the theme, the editor size and big-LCD view) and the whole 1 MiB
+- **Host clock** (the settings sheet's PLAYING: Off / Clock / Clock + transport; `plugin/HostClock.{h,cpp}`): the host's
+  tempo and position as MIDI clock for the firmware, so a firmware that follows MIDI clock (ChoralRoot's Options > MIDI
+  Clock = In, for one) runs in the host's tempo. Clock: 0xF8, 24 per quarter note, each on the sample it falls on (every
+  block starts again from the host's PPQ position, so it cannot drift from the host). Clock + transport (the default for
+  a new instance) adds 0xFA at the song's start, 0xFB when playing continues, 0xFC at the stop, and for a start in the
+  middle of a song 0xF2 (the song position) and 0xFB on the next sixteenth. A firmware that does not read the song
+  position can be started on the next bar line instead (**Start on the bar line**: 0xFA). A move of the playhead while it
+  plays (a locate, a loop) is 0xFC, 0xF2, 0xFB (or 0xFC and 0xFA on a bar line, and nothing when the jump is whole bars).
+  A core booted or switched while playing starts afresh. A clock that already arrives in the track's MIDI wins (the
+  plugin's own is silent for a second after it); a host that gives no tempo or position (the Standalone) gets none.
+  The messages go to the firmware only, never to the host's MIDI out. The setting is saved with the plugin state; a state
+  saved before it opens with Off.
+- **State:** the firmware's id and version, the settings (transpose, the MIDI toggles, the host clock, the theme, the editor size and big-LCD view) and the whole 1 MiB
   flash image, gzip-compressed (a few KB), so a Live set reopens with the unit exactly as it was saved.
 - **Firmware dropdown:** every core found in the two folders; switching saves the old one's flash, loads the new one
   and powers it on from its own flash.
@@ -298,7 +310,7 @@ list any more; they remain the host's.
   halted firmware keeps it shown, ringed in red. The button, or a **right-click anywhere off the controls** (on a key
   or button a right-click still latches it), opens the **settings sheet** from the right: FIRMWARE (a browser with
   search, category chips and a card per firmware), PRESET (‹ name ›, Save, Save as and Rename typed in place, Delete
-  confirmed in place, Export, Import), REMOTE FM-1, PLAYING (Transpose, the two MIDI options), HOST CONTROL (Button
+  confirmed in place, Export, Import), REMOTE FM-1, PLAYING (Transpose, the two MIDI options, Host clock), HOST CONTROL (Button
   parameters, Encoders, steps), LOOK (the themes as swatches, a custom theme), VIEW (Device / Screen, the big LCD),
   DEVICE (Restart, Reset flash, confirmed in place), ABOUT (the firmware's descriptor: version, licence, source,
   gating, credits); in the Standalone app also its audio / MIDI settings and state files (its own "Options" bar is
@@ -524,6 +536,14 @@ The tests:
   quantised (k/23, k/24) is never a detent, the Options cursor moves one row per click and the re-centre turns
   nothing, a click within the settle window is dropped and the next counts from the pushed value, Knob Master stays
   absolute, switching the mode turns nothing, the state keeps the mode and the steps; Felucca's Knob 1 and Tempo.
+- `host_clock_test`: the host's transport as MIDI clock (`plugin/HostClock.h`, pure code) on a simulated playhead, no
+  JUCE and no core: every tick on its sample (block sizes 32 .. 2048, 44.1 / 48 / 96 kHz, steady, stepped and ramped
+  tempo), a start at the song's start, in the middle of a bar and on a bar line (4/4, 3/4, 7/8), stop, pause and continue,
+  locate, loop, a count-in, a host without tempo or position, a clock in the host's MIDI, a skipped block, the modes.
+- `host_clock_plugin_test`: the same through the processor, on a fake core that gives back each clock message it was
+  handed and its device millisecond (`tests/clock_core.c`), under a fake `AudioPlayHead`: steady tempo, the modes, no
+  playhead, a start in the middle of a song, a core switched while playing, a clock in the host's MIDI, a skipped block,
+  the state (a state saved before the setting opens with Off).
 - `plugin_test`: the plugin's processor, headless: MIDI notes press the keys and sound at 48 and 44.1 kHz, the panel
   parameters reach the HAL, MIDI out is well formed, the flash survives the state round trip, presets save / reset /
   load / rename / export / import / delete with backups, the installed bundles resolve their cores folder (all three

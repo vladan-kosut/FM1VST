@@ -185,7 +185,7 @@ juce_add_plugin(FM1VST
     VST3_COPY_DIR "${FM1_VST3_DIR}"
     AU_COPY_DIR "${FM1_AU_DIR}")
 target_sources(FM1VST PRIVATE plugin/Processor.cpp plugin/Tier2Parameter.cpp plugin/HostRefresh.cpp plugin/Editor.cpp plugin/Theme.cpp
-                              plugin/PanelComponent.cpp plugin/RemoteLink.cpp plugin/Look.cpp plugin/Widgets.cpp plugin/Sheet.cpp
+                              plugin/PanelComponent.cpp plugin/HostClock.cpp plugin/RemoteLink.cpp plugin/Look.cpp plugin/Widgets.cpp plugin/Sheet.cpp
                               plugin/StandaloneHooks.cpp plugin/Hub.cpp plugin/EmuClock.cpp plugin/EditorPort.cpp
                               plugin/ScreenCapture.cpp plugin/VideoCapture.cpp)
 # copy the screen (plugin/ScreenCapture.h): the image clipboard is NSPasteboard's (JUCE's is text only)
@@ -545,6 +545,22 @@ add_test(NAME editor_port_coremidi_test COMMAND editor_port_test coremidi)
 add_test(NAME editor_port_managers_test COMMAND editor_port_test managers)
 set_tests_properties(editor_port_test editor_port_coremidi_test editor_port_managers_test PROPERTIES SKIP_RETURN_CODE 77
                      TIMEOUT 600 RESOURCE_LOCK fm1_editor_port)
+
+# The host's transport as MIDI clock (plugin/HostClock.h) through the processor, headless, on a fake core that gives back
+# each clock message it was handed and when (tests/clock_core.c): a fake AudioPlayHead, the modes, a start in the middle of
+# a song, a core switched while playing, a clock in the host's MIDI, a skipped block, the state
+add_library(clock_core MODULE tests/clock_core.c)
+target_include_directories(clock_core PRIVATE ${FM1_CORE_API_DIR})
+set_target_properties(clock_core PROPERTIES PREFIX "" SUFFIX ".fm1core" OUTPUT_NAME clk C_STANDARD 11
+                      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test_cores C_VISIBILITY_PRESET hidden)
+add_executable(host_clock_plugin_test tests/host_clock_plugin_test.cpp)
+target_link_libraries(host_clock_plugin_test PRIVATE FM1VST fm1engine)
+target_include_directories(host_clock_plugin_test PRIVATE $<TARGET_PROPERTY:FM1VST,INCLUDE_DIRECTORIES>)
+target_compile_definitions(host_clock_plugin_test PRIVATE $<TARGET_PROPERTY:FM1VST,COMPILE_DEFINITIONS>
+    FM1_SCRATCH_DIR="${CMAKE_BINARY_DIR}/host_clock_plugin_test_home" FM1_CLK_CORE="$<TARGET_FILE:clock_core>"
+    FM1_ECHO_CORE="$<TARGET_FILE:echo_core>")
+add_dependencies(host_clock_plugin_test ${FM1_CORE_TARGETS} clock_core echo_core)
+add_test(NAME host_clock_plugin_test COMMAND host_clock_plugin_test)
 
 # The Hub's firmwares on the fm1emu core (plugin/Hub.h), headless: a catalog fixture parses (which entries, the fallback
 # list, no gated name in it), a package is downloaded from a file:// fixture Hub and checked (a SHA-256 or size mismatch

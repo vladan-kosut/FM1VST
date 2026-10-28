@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // The plugin's AudioProcessor: see Processor.h for the threads, the Tier 2 seam, the files and the preset format.
 #include "Processor.h"
+#include "HostClockPlayHead.h"
 #include "Editor.h"
 #include "VideoCapture.h"
 
@@ -782,6 +783,7 @@ void FM1Processor::bootLocked()
     if (!loaded_ || dev_)
         return;
     videoTap_.freeze(AudioTap::kPowerOn);        // (a take ends before the new firmware's first sample)
+    hostClockResync_.store(true);                // (the new firmware has not seen the host's start)
     panelReleaseAll();                           // (a latched panel button never reaches a boot)
     panelPowerOns_.fetch_add(1);
     std::vector<uint8_t> bytes;
@@ -1969,7 +1971,8 @@ void FM1Processor::snapshotPanel()
 // A ValueTree "FM1VST" (binary): stateVersion, core, coreVersion, transpose, midiNotesPlayKeys, keyNotesToFirmware,
 // master, preset, editorW, editorH (the device view's size), bigLcd, viewMode (0 device, 1 screen), screenSize (the
 // screen view's side; absent until it was shown), knobDetents, buttonMode (0 Tap, 1 Hold, 2 Toggle-hold), buttonTapMs,
-// encoderMode (0 Absolute, 1 Stepped), encoderSteps (8..64), remote (Remote FM-1 on), remoteIgnoreMidi, a child "theme" (name base membrane knob, and bed / label when the theme
+// encoderMode (0 Absolute, 1 Stepped), encoderSteps (8..64), remote (Remote FM-1 on), remoteIgnoreMidi, hostClock (0 Off,
+// 1 Clock, 2 Clock + transport; absent: 0, a set saved before it keeps its behaviour), hostClockOnBar, a child "theme" (name base membrane knob, and bed / label when the theme
 // sets them; "#RRGGBB") and "flash": the image gzip-compressed (a MemoryBlock property; absent when the instance
 // never had one, i.e. a fresh flash). emuClock ("auto" or the MHz) and emuAutoMhz (Auto's step), always; with an
 // emulated firmware (core "fm1emu"), a child "emu" (id name author version sha256 size pkg source product local), and
@@ -2024,6 +2027,8 @@ void FM1Processor::getStateInformation(juce::MemoryBlock &dest)
     t.setProperty("encoderSteps", encSteps_.load(), nullptr);
     t.setProperty("remote", remoteOn_.load(), nullptr);
     t.setProperty("remoteIgnoreMidi", remoteIgnoreMidi_.load(), nullptr);
+    t.setProperty("hostClock", hostClockMode_.load(), nullptr);
+    t.setProperty("hostClockOnBar", hostClockOnBar_.load(), nullptr);
     t.setProperty("editorPort", editorOn_.load(), nullptr);
     const Theme th = getTheme();
     juce::ValueTree tt("theme");
@@ -2077,6 +2082,8 @@ void FM1Processor::setStateInformation(const void *data, int sizeInBytes)
     encSteps_.store(juce::jlimit(kMinEncSteps, kMaxEncSteps, (int)t.getProperty("encoderSteps", kDefaultEncSteps)));
     setEncoderMode((int)t.getProperty("encoderMode", kEncAbsolute));
     setRemoteIgnoreMidi((bool)t.getProperty("remoteIgnoreMidi", true));
+    setHostClockMode((int)t.getProperty("hostClock", (int)hostclock::Mode::Off));   // (a set saved before it: as it was)
+    setHostClockOnBar((bool)t.getProperty("hostClockOnBar", false));
     setRemoteEnabled((bool)t.getProperty("remote", false));   // (on: the unit lock decides who drives the unit)
     editorOn_.store((bool)t.getProperty("editorPort", false));   // (the timer makes the port, for the firmware below)
     {
@@ -2163,6 +2170,7 @@ void FM1Processor::prepareToPlay(double sampleRate, int maximumExpectedSamplesPe
         const juce::ScopedLock l(devLock_);
         sampleRate_ = sampleRate > 0 ? sampleRate : 44100.0;
         prepared_ = true;
+        hostClockResync_.store(true);            // (the rate may differ, the transport may be anywhere)
         if (!dev_ && loaded_)
             bootLocked();
         setLatencySamples(latencyLocked());
@@ -2682,19 +2690,44 @@ void FM1Processor::renderBlock(juce::AudioBuffer<float> &buffer, juce::MidiBuffe
         midi.clear();
         return;
     }
+    // the host's transport as MIDI clock for the core (HostClock.h); a clock already in the host's MIDI wins. Only here, past
+    // every early return: a block that gave the core nothing (the lock was taken, no core booted, nowhere to render) must not
+    // count as sent. Such a block is not repaired by a resync either: the core did lose its ticks, so the next block's
+    // position is what HostClock sees as a move (a locate: 0xFC, 0xF2, 0xFB), or a tick late when under half a tick.
+    bool hostHasClock = false;
+    for (const auto meta : midi)
+        hostHasClock = hostHasClock || (meta.numBytes == 1 && meta.data[0] >= 0xF8 && meta.data[0] <= 0xFC);
+    if (hostClockResync_.exchange(false))
+        hostClock_.resync();
+    const int clockN = hostClock_.process(hostclock::fromPlayHead(getPlayHead()), n, sampleRate_,
+                                          (hostclock::Mode)hostClockMode_.load(), hostClockOnBar_.load(), hostHasClock,
+                                          clockEv_.data(), (int)clockEv_.size());
     int pos = 0;
+    int ci = 0;
+    auto clockUpTo = [&](int limit) {            // (the clock's events up to a sample, behind the audio before them)
+        for (; ci < clockN && clockEv_[(size_t)ci].offset <= limit; ci++) {
+            const hostclock::Event &e = clockEv_[(size_t)ci];
+            if (e.offset > pos) {
+                renderSegment(L, R, pos, e.offset);
+                pos = e.offset;
+            }
+            forwardMidi(juce::MidiMessage(e.b, e.len));
+        }
+    };
     // the unit's own panel events, also seen by the host on its MIDI port: they arrive through the session already
     const bool dropUnitMidi = remoteIgnoreMidi_.load() && remote_->engaged();
     for (const auto meta : midi) {               // MidiBuffer iterates in sample order
         if (dropUnitMidi && isRemotePanelMidi(meta.data, meta.numBytes))
             continue;
         const int at = juce::jlimit(0, n, meta.samplePosition);
+        clockUpTo(at);
         if (at > pos) {
             renderSegment(L, R, pos, at);
             pos = at;
         }
         handleMidi(meta.getMessage());
     }
+    clockUpTo(n);
     if (pos < n)
         renderSegment(L, R, pos, n);
     for (int c = 2; c < buffer.getNumChannels(); c++)

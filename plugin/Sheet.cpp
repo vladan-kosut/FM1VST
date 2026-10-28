@@ -598,6 +598,10 @@ private:
     Row notes_{look_, "MIDI notes play keys", &notesSw_, Switch::kW, 24};
     Switch toFwSw_{look_};
     Row toFw_{look_, String::fromUTF8("\xe2\x80\xa6" "and reach the firmware's MIDI in"), &toFwSw_, Switch::kW, 24};
+    Segmented hostClockSeg_{look_, {"Off", "Clock", "Clock + transport"}};
+    Row hostClock_{look_, "Host clock", &hostClockSeg_, 150, 30};
+    Switch hostBarSw_{look_};
+    Row hostBar_{look_, "Start on the bar line", &hostBarSw_, Switch::kW, 24};
 
     Heading hHost_{look_, "Host control"};
     Segmented buttonModeSeg_{look_, {"Tap", "Hold", "Toggle"}};
@@ -803,6 +807,24 @@ Sheet::MainPage::MainPage(Sheet &s, FM1Editor &ed) : ScrollPage(ed.look()), shee
     toFwSw_.onChange = [this](bool on) { p_.setKeyNotesToFirmware(on); };
     toFw_.setTooltip("A note that pressed a key is also handed to the firmware's MIDI in (off: ChoralRoot's CHORD channel "
                      "is 1, so the same note would also sound raw on the chord part)");
+    stack_.add(hostClock_);
+    hostClockSeg_.onChange = [this](int m) {
+        p_.setHostClockMode(m);
+        refresh();
+    };
+    const String hct = "The host's tempo and position as MIDI clock for the firmware (a core set to follow MIDI clock, e.g. "
+                       "ChoralRoot's Options > MIDI Clock = In): 24 clocks per quarter note on the sample they fall on. "
+                       "Clock + transport adds start, continue and stop, and the song position for a start in the middle of a "
+                       "song. A clock that already arrives in the track's MIDI wins. Saved with the set.";
+    hostClock_.setTooltip(hct);
+    hostClockSeg_.setTooltip(hct);
+    hostClock_.setControlWidth(hostClockSeg_.preferredWidth());
+    stack_.add(hostBar_);
+    hostBar_.setCaption("for firmwares that don't read the song position");
+    hostBarSw_.onChange = [this](bool on) { p_.setHostClockOnBar(on); };
+    hostBar_.setTooltip("Instead of continuing at the song position, send start on the next bar line (a start in the middle of "
+                        "a bar would otherwise leave a firmware that ignores the song position out of step with the host's bar). "
+                        "Clock + transport only.");
 
     // HOST CONTROL
     stack_.add(hHost_);
@@ -1319,6 +1341,9 @@ void Sheet::MainPage::refresh(bool full)
     transposeSt_.setValue(p_.getTranspose());
     notesSw_.setOn(p_.getMidiNotesPlayKeys());
     toFwSw_.setOn(p_.getKeyNotesToFirmware());
+    hostClockSeg_.setSelected(p_.getHostClockMode());
+    hostBarSw_.setOn(p_.getHostClockOnBar());
+    hostBar_.setEnabled(p_.getHostClockMode() == 2);
     buttonModeSeg_.setSelected(p_.getButtonMode());
     encModeSeg_.setSelected(p_.getEncoderMode());
     stepsSt_.setValue(p_.getEncoderSteps());
