@@ -3,6 +3,17 @@
 FM1VST's releases. The version is `project(FM1VST VERSION ..)` in CMakeLists.txt (the plugin shows it in its
 settings sheet); a release is the tag `v<version>` on it (.github/workflows/release.yml builds and publishes it).
 
+## Unreleased: host clock
+
+- **The host's tempo and position as MIDI clock for the firmware** (FM1-VST-PLAN.md 4.6). A firmware that follows MIDI
+  clock (ChoralRoot's Options > MIDI Clock = In, for one) now runs in the host's tempo and bar: 24 clocks per quarter
+  note, each on the sample it falls on, anchored to the host's PPQ position every block, so it cannot drift. The
+  settings sheet's PLAYING has **Host clock**: Off, Clock, or Clock + transport (the default for a new instance), which
+  adds start, continue and stop, and the song position for a start in the middle of a song. **Start on the bar line**
+  starts a firmware that does not read the song position on the next bar line instead. A clock that already arrives in
+  the track's MIDI wins, a core switched while playing starts afresh, and a host that gives no tempo (the Standalone)
+  gets nothing. A state saved before this opens with Off, as it behaved.
+
 ## 0.6.2 (2026-10-27): Remote FM-1 over Bluetooth MIDI
 
 - **Remote FM-1 over Bluetooth MIDI.** A unit on RemoteFM1 0.2 or later, paired with the Mac over Bluetooth (it shows

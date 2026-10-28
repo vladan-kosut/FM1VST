@@ -345,7 +345,8 @@ sees a parameter fight.
 - **In:** notes 53..79 press the keys (note - 53 = key index, as on the device), with a transpose
   setting; every incoming packet is also handed to the core's `emu_fw_midi_in`, so the firmware's own
   MIDI handling works (ChoralRoot's CHORD / BASS channels, CCs, and MIDI clock in: Options > MIDI
-  Clock = In follows Live's clock, which the plugin generates from the host transport).
+  Clock = In follows Live's clock, which the plugin generates from the host transport: plugin/HostClock.h, the settings
+  sheet's Host clock).
 - **Out:** the core's `emu_fw_midi_out_take` packets become the plugin's MIDI output, so Live can route
   ChoralRoot's chord and bass notes to other instruments. Live 12 passes MIDI out of VST3 / AU effects
   and instruments on the track's MIDI output.
